@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Erick's Personal Lyrics</title>
+<style>
+  :root { --size: 5.2vw; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #000; color: #fff;
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    overflow: hidden; cursor: none; }
+  #top { position: fixed; top: 0; left: 0; right: 0; height: 9vh; min-height: 56px;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 3vw; background: linear-gradient(#000 70%, transparent); z-index: 5; }
+  #meta { min-width: 0; }
+  #title { font-size: 2.2vw; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #artist { font-size: 1.6vw; color: #9aa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #controls { display: flex; gap: 1vw; cursor: auto; }
+  #controls button { background: #1c1c1e; color: #fff; border: 1px solid #333; border-radius: 12px;
+    font-size: 1.8vw; min-width: 4.2vw; height: 5vw; max-height: 64px; padding: 0 1vw; }
+  #controls button:active { background: #333; }
+  #stage { position: fixed; inset: 0; overflow: hidden; }
+  #lines { position: absolute; left: 0; right: 0; top: 0; padding: 0 5vw;
+    transition: transform .45s cubic-bezier(.2,.7,.2,1); will-change: transform; }
+  .line { font-size: var(--size); line-height: 1.2; font-weight: 800; padding: .25em 0;
+    color: #4a4a50; transition: color .3s, opacity .3s; text-wrap: balance; }
+  .line.near { color: #7b7b84; }
+  .line.past { color: #34343a; }
+  .line.cur { color: #fff; }
+  .line.empty { height: 1.2em; }
+  #plain { position: absolute; inset: 11vh 5vw 4vh; overflow-y: auto; font-size: calc(var(--size) * .6);
+    line-height: 1.35; font-weight: 700; color: #ddd; white-space: pre-wrap; cursor: auto; }
+  #center { position: fixed; inset: 0; display: none; flex-direction: column; align-items: center;
+    justify-content: center; text-align: center; padding: 6vw; gap: 2vw; z-index: 4; cursor: auto; }
+  #center h1 { font-size: 3.6vw; margin: 0; }
+  #center p { font-size: 1.9vw; color: #9aa; margin: 0; max-width: 70vw; line-height: 1.4; }
+  #center button { font-size: 2.2vw; padding: 1.2vw 3vw; border-radius: 999px; border: 0;
+    background: #1db954; color: #000; font-weight: 800; }
+  code { background: #1c1c1e; padding: .1em .4em; border-radius: 6px; color: #ddd; }
+  #status { position: fixed; bottom: 1.2vh; left: 0; right: 0; text-align: center; font-size: 1.3vw;
+    color: #667; z-index: 3; }
+</style>
+</head>
+<body>
+<div id="top">
+  <div id="meta"><div id="title"></div><div id="artist"></div></div>
+  <div id="controls">
+    <button id="offMinus" title="Lyrics earlier">-0.5s</button>
+    <button id="offPlus" title="Lyrics later">+0.5s</button>
+    <button id="sizeMinus">A-</button>
+    <button id="sizePlus">A+</button>
+  </div>
+</div>
+<div id="stage"><div id="lines"></div><div id="plain" hidden></div></div>
+<div id="center"></div>
+<div id="status"></div>
+
+<script>
+// ================= SETTINGS =================
+// Paste your Spotify app's Client ID here (from developer.spotify.com/dashboard)
+const SPOTIFY_CLIENT_ID = "";
+// ============================================
+
+const SCOPES = "user-read-currently-playing user-read-playback-state";
+const REDIRECT_URI = location.origin + location.pathname;
+const LS = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  del(k) { try { localStorage.removeItem(k); } catch {} }
+};
+const $ = id => document.getElementById(id);
+
+// ---------- LRC parsing ----------
+function parseLRC(text) {
+  const out = [];
+  if (!text) return out;
+  for (const raw of text.split(/\r?\n/)) {
+    const stamps = [...raw.matchAll(/\[(\d+):(\d+(?:\.\d+)?)\]/g)];
+    if (!stamps.length) continue;
+    const words = raw.replace(/\[[^\]]*\]/g, "").trim();
+    for (const m of stamps) out.push({ t: parseInt(m[1], 10) * 60 + parseFloat(m[2]), text: words });
+  }
+  out.sort((a, b) => a.t - b.t);
+  return out;
+}
+function currentIndex(lines, t) {
+  let lo = 0, hi = lines.length - 1, ans = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (lines[mid].t <= t) { ans = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  return ans;
+}
+
+// ---------- Spotify auth (PKCE, no server needed) ----------
+function rand(n) {
+  const a = new Uint8Array(n); crypto.getRandomValues(a);
+  return Array.from(a, b => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"[b % 66]).join("");
+}
+async function sha256b64url(s) {
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return btoa(String.fromCharCode(...new Uint8Array(d))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+async function login() {
+  const verifier = rand(96);
+  LS.set("pkce_verifier", verifier);
+  const p = new URLSearchParams({
+    client_id: SPOTIFY_CLIENT_ID, response_type: "code", redirect_uri: REDIRECT_URI,
+    scope: SCOPES, code_challenge_method: "S256", code_challenge: await sha256b64url(verifier)
+  });
+  location.href = "https://accounts.spotify.com/authorize?" + p;
+}
+async function tokenRequest(params) {
+  const r = await fetch("https://accounts.spotify.com/api/token", {
+    method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ client_id: SPOTIFY_CLIENT_ID, ...params })
+  });
+  if (!r.ok) throw new Error("token " + r.status);
+  const j = await r.json();
+  LS.set("tok", {
+    access: j.access_token,
+    refresh: j.refresh_token || (LS.get("tok", {}) || {}).refresh,
+    exp: Date.now() + (j.expires_in - 60) * 1000
+  });
+}
+async function handleRedirect() {
+  const q = new URLSearchParams(location.search);
+  if (q.get("error")) { history.replaceState({}, "", REDIRECT_URI); throw new Error(q.get("error")); }
+  const code = q.get("code");
+  if (!code) return;
+  try {
+    await tokenRequest({ grant_type: "authorization_code", code, redirect_uri: REDIRECT_URI,
+      code_verifier: LS.get("pkce_verifier", "") });
+  } finally { history.replaceState({}, "", REDIRECT_URI); }
+}
+async function accessToken() {
+  const t = LS.get("tok", null);
+  if (!t) return null;
+  if (Date.now() < t.exp) return t.access;
+  if (!t.refresh) return null;
+  await tokenRequest({ grant_type: "refresh_token", refresh_token: t.refresh });
+  return LS.get("tok", {}).access;
+}
+
+// ---------- Lyrics ----------
+async function fetchLyrics(track) {
+  const key = "lyr_" + track.id;
+  const cached = LS.get(key, null);
+  if (cached) return cached;
+  const artist = track.artists[0].name;
+  const base = "https://lrclib.net/api/";
+  const qs = new URLSearchParams({ track_name: track.name, artist_name: artist,
+    album_name: track.album.name, duration: Math.round(track.duration_ms / 1000) });
+  let hit = null;
+  try {
+    const r = await fetch(base + "get?" + qs);
+    if (r.ok) hit = await r.json();
+  } catch {}
+  if (!hit) {
+    try {
+      const r = await fetch(base + "search?" + new URLSearchParams({ track_name: track.name, artist_name: artist }));
+      if (r.ok) {
+        const arr = await r.json();
+        const dur = track.duration_ms / 1000;
+        hit = arr.filter(x => Math.abs((x.duration || 0) - dur) < 4)
+                 .sort((a, b) => (!!b.syncedLyrics) - (!!a.syncedLyrics))[0] || null;
+      }
+    } catch {}
+  }
+  const res = hit ? { synced: hit.syncedLyrics || "", plain: hit.plainLyrics || "" } : { synced: "", plain: "" };
+  if (hit) LS.set(key, res);   // don't cache misses, they may get added later
+  return res;
+}
+
+// ---------- State & rendering ----------
+let st = { trackId: null, lines: [], els: [], idx: -2, playing: false, base: 0, at: 0, dur: 0 };
+let offset = LS.get("offset", 0);     // seconds, positive = show lyrics later
+let size = LS.get("size", 5.2);
+document.documentElement.style.setProperty("--size", size + "vw");
+
+function setStatus(s) { $("status").textContent = s || ""; }
+function showCenter(html) { const c = $("center"); c.innerHTML = html; c.style.display = "flex"; }
+function hideCenter() { $("center").style.display = "none"; }
+
+function renderLines(lines) {
+  const box = $("lines");
+  box.innerHTML = ""; st.els = [];
+  for (const l of lines) {
+    const d = document.createElement("div");
+    d.className = "line" + (l.text ? "" : " empty");
+    d.textContent = l.text || "";
+    box.appendChild(d); st.els.push(d);
+  }
+  box.style.transform = "translateY(" + innerHeight * 0.4 + "px)";
+  st.idx = -2;
+}
+function paint(idx) {
+  if (idx === st.idx) return;
+  st.idx = idx;
+  st.els.forEach((el, i) => {
+    el.className = "line" + (el.classList.contains("empty") ? " empty" : "") +
+      (i === idx ? " cur" : i < idx ? " past" : i <= idx + 2 ? " near" : "");
+  });
+  const el = st.els[Math.max(idx, 0)];
+  if (el) $("lines").style.transform = "translateY(" + (innerHeight * 0.42 - el.offsetTop - el.offsetHeight / 2) + "px)";
+}
+function tick() {
+  if (st.lines.length) {
+    const pos = st.base + (st.playing ? (performance.now() - st.at) / 1000 : 0) - offset;
+    paint(currentIndex(st.lines, pos));
+  }
+  requestAnimationFrame(tick);
+}
+
+async function loadTrack(track) {
+  st.trackId = track.id;
+  st.lines = []; st.els = [];
+  $("lines").innerHTML = ""; $("plain").hidden = true;
+  $("title").textContent = track.name;
+  $("artist").textContent = track.artists.map(a => a.name).join(", ");
+  setStatus("Finding lyrics...");
+  const id = track.id;
+  const res = await fetchLyrics(track);
+  if (st.trackId !== id) return; // song changed while loading
+  const lines = parseLRC(res.synced);
+  if (lines.length) {
+    st.lines = lines; renderLines(lines); setStatus("");
+  } else if (res.plain) {
+    $("plain").textContent = res.plain; $("plain").hidden = false;
+    setStatus("No synced lyrics for this song (showing plain text)");
+  } else {
+    setStatus("No lyrics found for this song");
+  }
+}
+
+// ---------- Polling ----------
+let pollDelay = 3000;
+async function poll() {
+  try {
+    const tok = await accessToken();
+    if (!tok) { showLogin(); return; }
+    const t0 = performance.now();
+    const r = await fetch("https://api.spotify.com/v1/me/player/currently-playing", {
+      headers: { Authorization: "Bearer " + tok } });
+    if (r.status === 429) { pollDelay = (parseInt(r.headers.get("Retry-After") || "5", 10) + 1) * 1000; return; }
+    pollDelay = 3000;
+    if (r.status === 401) { LS.del("tok"); showLogin(); return; }
+    if (r.status === 204 || !r.ok) { st.playing = false; if (r.status === 204) setStatus("Nothing playing. Start a song in Spotify."); return; }
+    const j = await r.json();
+    hideCenter();
+    const item = j.item;
+    if (!item || item.type !== "track") { setStatus("Play a song to see lyrics"); return; }
+    const rtt = performance.now() - t0;
+    st.base = (j.progress_ms || 0) / 1000 + rtt / 2000;
+    st.at = performance.now();
+    st.playing = !!j.is_playing;
+    if (item.id !== st.trackId) loadTrack(item);
+  } catch (e) {
+    setStatus("Connection hiccup, retrying...");
+  } finally {
+    setTimeout(poll, pollDelay);
+  }
+}
+
+function showLogin(msg) {
+  showCenter(`<h1>Erick's Personal Lyrics</h1>
+    <p>${msg || "Connect Spotify once and the lyrics will follow whatever you play."}</p>
+    <button id="loginBtn">Connect Spotify</button>`);
+  $("loginBtn").onclick = login;
+}
+
+// ---------- Controls ----------
+function bump() { LS.set("offset", offset); setStatus("Lyrics offset: " + (offset >= 0 ? "+" : "") + offset.toFixed(1) + "s"); }
+$("offMinus").onclick = () => { offset -= 0.5; bump(); };
+$("offPlus").onclick = () => { offset += 0.5; bump(); };
+function setSize(v) { size = Math.min(9, Math.max(2.5, v)); LS.set("size", size);
+  document.documentElement.style.setProperty("--size", size + "vw"); st.idx = -2; }
+$("sizeMinus").onclick = () => setSize(size - 0.5);
+$("sizePlus").onclick = () => setSize(size + 0.5);
+
+// ---------- Boot ----------
+(async function boot() {
+  requestAnimationFrame(tick);
+  if (!SPOTIFY_CLIENT_ID) {
+    showCenter(`<h1>One setup step left</h1>
+      <p>Open <code>index.html</code>, paste your Spotify Client ID into <code>SPOTIFY_CLIENT_ID</code> at the top of the script, and redeploy.</p>
+      <p>Your redirect URI to register on Spotify is:<br><code>${REDIRECT_URI}</code></p>`);
+    return;
+  }
+  try { await handleRedirect(); } catch (e) { showLogin("Spotify login failed (" + e.message + "). Try again."); return; }
+  if (!LS.get("tok", null)) { showLogin(); return; }
+  poll();
+})();
+</script>
+</body>
+</html>
