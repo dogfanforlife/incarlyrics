@@ -59,11 +59,11 @@
 <script>
 // ================= SETTINGS =================
 // Paste your Spotify app's Client ID here (from developer.spotify.com/dashboard)
-const SPOTIFY_CLIENT_ID = "";
+const SPOTIFY_CLIENT_ID = "8f372346675f474c8549d7333864357b";
 // ============================================
 
 const SCOPES = "user-read-currently-playing user-read-playback-state";
-const REDIRECT_URI = location.origin + location.pathname;
+const REDIRECT_URI = location.origin + location.pathname.replace(/index\.html$/, "");
 const LS = {
   get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
@@ -266,7 +266,8 @@ async function poll() {
 function showLogin(msg) {
   showCenter(`<h1>Erick's Personal Lyrics</h1>
     <p>${msg || "Connect Spotify once and the lyrics will follow whatever you play."}</p>
-    <button id="loginBtn">Connect Spotify</button>`);
+    <button id="loginBtn">Connect Spotify</button>
+    <p style="font-size:1.2vw;color:#667">Redirect URI this page sends to Spotify: <code>${REDIRECT_URI}</code></p>`);
   $("loginBtn").onclick = login;
 }
 
